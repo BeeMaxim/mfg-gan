@@ -4,7 +4,12 @@ from utils.train_once import train_once
 from utils.utils import Plotter, Logger
 from torchviz import make_dot
 from PIL import Image
+from tqdm import tqdm
 import os
+from utils.init_utils import setup_saving_and_logging
+from logger.cometml import CometMLWriter
+
+
 
 def start_train(a):
     """
@@ -14,6 +19,14 @@ def start_train(a):
     env = a['env']
     the_logger = Logger(a)
     the_plotter = Plotter(a, the_logger)
+    writer = CometMLWriter(
+        project_name='mfg_gan',
+        run_name='testing',
+        mode='online',
+        loss_names=['disc_t0_loss', 'disc_t1_loss', 'disc_hjb_loss', 'disc_total_loss'],
+        log_checkpoints=False,
+        id_length=32
+    )
 
     # =============================================
     #           Precompute some variables
@@ -95,7 +108,7 @@ def start_train(a):
     TT = torch.tensor([env.TT], dtype=torch.float).expand((a['batch_size'], 1)).to(a['device'])
 
     # Start the iteration
-    for epoch in range(a['max_epochs'] + 1):
+    for epoch in tqdm(range(a['max_epochs'] + 1)):
         # =============================
         #           Info dump
         # =============================
@@ -137,22 +150,32 @@ def start_train(a):
 
         the_logger.log_training(train_info, DISC_STRING)
         if epoch % a['print_rate'] == 0:
-            the_logger.print_to_console(train_info, DISC_STRING)
+            pass
+            #the_logger.print_to_console(train_info, DISC_STRING)
 
         # ======================================
         #           Train rho/generator
         # ======================================
         if epoch % a['gen_every_disc'] == 0:  # How many times to update discriminator per one update of generator.
-            train_info = train_once(train_dict, GEN_STRING)
+            train_info.update(train_once(train_dict, GEN_STRING))
 
         the_logger.log_training(train_info, GEN_STRING)
         if epoch % a['print_rate'] == 0:
-            the_logger.print_to_console(train_info, GEN_STRING)
+            pass
+            #the_logger.print_to_console(train_info, GEN_STRING)
 
         # =======================================
         #           Plot images and etc.
         # =======================================
         if epoch % a['print_rate'] == 0:
-            the_plotter.make_plots(epoch, generator, the_logger)
+            path = the_plotter.make_plots(epoch, generator, the_logger)
+            print(path)
+            writer.add_image('image', path)
+
+        if epoch % a['print_rate'] == 0:
+            writer.set_step(epoch)
+            writer.add_scalar('epoch', epoch)
+            for k, v in train_info.items():
+                writer.add_scalar(k, v)
 
     return the_logger

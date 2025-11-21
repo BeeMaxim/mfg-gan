@@ -57,10 +57,21 @@ def train_once(td, disc_or_gen):
     # Get info about the training
     with torch.no_grad():
         hjb_error = torch.norm(hjb_loss_tensor + FF_total_tensor, dim=1).mean(dim=0) / td['TT'][0].item()
+        '''
         training_info = {'total_loss': total_loss.item(), 'hjb_loss': hjb_loss.item(), 'hjb_error': hjb_error.item()}
         training_info.update(hjb_loss_info)
-        training_info.update(forcing_info)
+        training_info.update(forcing_info)'''
+        training_info = {}
+
+        prefix = 'disc' if disc_or_gen == DISC_STRING else 'gen'
         if disc_or_gen == DISC_STRING:
-            training_info['disc_00_loss'] = disc_00_loss.item()
+            training_info[f'{prefix}_t0_loss'] = disc_00_loss.item()
+            training_info[f'{prefix}_t1_loss'] = hjb_loss.item()
+            training_info[f'{prefix}_hjb_loss'] = hjb_error.item()
+            training_info[f'{prefix}_total_loss'] = total_loss.item()
+        else:
+            training_info[f'{prefix}_t1_loss'] = hjb_loss.item()
+            training_info[f'{prefix}_ff_loss'] = FF_total_loss.item()
+            training_info[f'{prefix}_total_loss'] = total_loss.item()
 
     return training_info

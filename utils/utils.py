@@ -134,11 +134,12 @@ class Plotter(object):
             fig.suptitle(f'epoch: {epoch}')
             if self.show_plots:
                 plt.show()
-            the_logger.save_plot(epoch, fig)
+            path = the_logger.save_plot(epoch, fig)
             plt.close(fig)
 
             # Переключаем обратно в режим train
             generator.train()
+            return path
 
 
 # ===========================================================
@@ -288,6 +289,7 @@ class Logger(object):
             # Save the 2D (static) plot
             fig.savefig(join(self.plots_dir, f'plot-{epoch}.png'), bbox_inches='tight')
             fig.savefig(join(self.experiment_dir, f'latest_plot.png'), bbox_inches='tight')
+            return join(self.plots_dir, f'plot-{epoch}.png')
 
     def print_to_console(self, td, disc_or_gen):
         """

@@ -20,7 +20,7 @@ def rho0(i=0):
     D0 = 129
     N = 2798170
 
-    cam_vec = [S0]#, E0, I0, R0, H0, C0, D0]
+    cam_vec = [S0, E0, I0, R0, H0, C0, D0]
     cam_dict = {
         0: 'S0',
         1: 'E0',

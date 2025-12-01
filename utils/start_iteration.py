@@ -54,6 +54,7 @@ def start_train(a):
     # grad_outputs_vec = (batch_size * env.dim, env.dim) = (50 * 2, 2)
     #
     # [[1., 0.],  # Вектор для i=0 (первый пример)
+
     #  [1., 0.],  # Вектор для i=0 (второй пример)
     #  [1., 0.],  # Вектор для i=0 (третий пример)
     #  [0., 1.],  # Вектор для i=1 (первый пример)
@@ -65,11 +66,16 @@ def start_train(a):
     #           Setup the learning
     # ======================================
     # Compute the mean and variance of rho0 (assuming rho0 is a simple Gaussian)
+
+    # FIX???
+    '''
     temp_sample = env.sample_rho0(int(1e4)).to(a['device'])
     mu = temp_sample.mean(axis=0)
     std = torch.sqrt(temp_sample.var(axis=0))
     if 0 in std:
-        raise ValueError("std of sample_rho0 has a zero!")
+        raise ValueError("std of sample_rho0 has a zero!")'''
+    
+    mu, std = 0, 1
 
     # Make the networks
     # TODO: в forward(self, t, inp) добавить генератор generator, чтобы посчитать rho(T) = generator(T, rho0)
@@ -168,9 +174,10 @@ def start_train(a):
         #           Plot images and etc.
         # =======================================
         if epoch % a['print_rate'] == 0:
-            path = the_plotter.make_plots(epoch, generator, the_logger)
-            print(path)
-            writer.add_image('image', path)
+            pass
+            #path = the_plotter.make_plots(epoch, generator, the_logger)
+            #print(path)
+            #writer.add_image('image', path)
 
         if epoch % a['print_rate'] == 0:
             writer.set_step(epoch)

@@ -39,6 +39,7 @@ class Plotter(object):
 
     def __init__(self, args, the_logger,
                  num_plot_samples=100, linspace_size=201, timesteps=10):
+        '''
         self.env = args['env']
         self.TT = self.env.TT
         self.device = args['device']
@@ -53,7 +54,7 @@ class Plotter(object):
         self.X, self.Y, self.Z = self._make_obstacle_contours()
 
         # Saved points to plot
-        self.rho0_saved = self.env.sample_rho0(self.num_plot_samples).to(args['device'])
+        self.rho0_saved = self.env.sample_rho0(self.num_plot_samples).to(args['device'])'''
 
     def _make_obstacle_contours(self):
         """

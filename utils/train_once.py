@@ -21,7 +21,7 @@ def train_once(td, disc_or_gen):
     set_zero_grad(td['disc_optimizer'], td['gen_optimizer'], disc_or_gen)
 
     # Integral for the Hamilton-Jacobi part
-    rho00, tt_samples, rhott_samples = get_generator_samples(td, disc_or_gen)
+    rho00, tt_samples, rhott_samples, groups = get_generator_samples(td, disc_or_gen)
 
     # Вычисляем loss_t ...
     hjb_loss_tensor, hjb_loss_info = get_hjb_loss(td, tt_samples, rhott_samples, td['batch_size'],
@@ -33,7 +33,7 @@ def train_once(td, disc_or_gen):
 
     # Interaction terms
     # Вычисляем f(xb,tb)
-    FF_total_tensor, forcing_info = get_FF_loss(td, tt_samples, rhott_samples, disc_or_gen)
+    FF_total_tensor = get_FF_loss(td, tt_samples, rhott_samples, disc_or_gen)
 
     # Finish computing the total loss
     if disc_or_gen == DISC_STRING:
@@ -51,7 +51,8 @@ def train_once(td, disc_or_gen):
         total_loss = hjb_loss + FF_total_loss
 
     # Backprop and optimize
-    total_loss.backward()
+
+    total_loss.sum().backward()
     optimizer_step(td['disc_optimizer'], td['gen_optimizer'], disc_or_gen)
 
     # Get info about the training
@@ -65,13 +66,13 @@ def train_once(td, disc_or_gen):
 
         prefix = 'disc' if disc_or_gen == DISC_STRING else 'gen'
         if disc_or_gen == DISC_STRING:
-            training_info[f'{prefix}_t0_loss'] = disc_00_loss.item()
-            training_info[f'{prefix}_t1_loss'] = hjb_loss.item()
-            training_info[f'{prefix}_hjb_loss'] = hjb_error.item()
-            training_info[f'{prefix}_total_loss'] = total_loss.item()
+            training_info[f'{prefix}_t0_loss'] = disc_00_loss.sum().item()
+            training_info[f'{prefix}_t1_loss'] = hjb_loss.sum().item()
+            training_info[f'{prefix}_hjb_loss'] = hjb_error.sum().item()
+            training_info[f'{prefix}_total_loss'] = total_loss.sum().item()
         else:
-            training_info[f'{prefix}_t1_loss'] = hjb_loss.item()
-            training_info[f'{prefix}_ff_loss'] = FF_total_loss.item()
-            training_info[f'{prefix}_total_loss'] = total_loss.item()
+            training_info[f'{prefix}_t1_loss'] = hjb_loss.sum().item()
+            training_info[f'{prefix}_ff_loss'] = FF_total_loss.sum().item()
+            training_info[f'{prefix}_total_loss'] = total_loss.sum().item()
 
     return training_info

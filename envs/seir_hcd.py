@@ -1,6 +1,8 @@
 import math
 import numpy as np
 import torch
+from scipy.integrate import quad, cumulative_trapezoid
+from scipy.interpolate import interp1d
 from utils.utils import DISC_STRING, GEN_STRING, sqeuc
 
 
@@ -11,12 +13,14 @@ class SEIRHCD_Env(object):
     """
     SEIR-HCD environment.
     """
-    # TODO: переделать параметры под SEIR-HCD (сейчас они сделаны под Bottleneck)
     def __init__(self, device):
         self.dim = 7
         self.x_c = 0.5
         self.sigma_c = 0.2
+        self.d1 = 1e-5
+        self.d2 = 10
 
+        self.init_count = [2769113, 462, 2520, 6193, 1845, 26, 129, 2798170]
 
         # ---------------------- #
         self.nu = 0.1
@@ -28,6 +32,19 @@ class SEIRHCD_Env(object):
         self.device = device
         self.name = "SEIRHCD_Env"  # Environment name
 
+        # HARDCODED COEFS, FIX!
+        self.a = 1
+        self.alpha_i = 0.06
+        self.alpha_e = 0.11
+        self.w_inc = 0.21
+        self.w_inf = 0.15
+        self.w_imm = 0.006
+        self.w_hosp = 0.33
+        self.w_crit = 0.16
+        self.beta = 0.22
+        self.eps_hc = 0.01
+        self.mu = 0.34
+
         # Options for plotting
         self.plot_window_size = 3
         self.plot_dim = 2
@@ -36,42 +53,79 @@ class SEIRHCD_Env(object):
         self.info_dict = {'env_name': self.name, 'dim': self.dim, 'nu': self.nu,
                           'ham_scale': self.ham_scale, 'psi_scale': self.psi_scale,
                           'lam_obstacle': self.lam_obstacle, 'lam_congestion': self.lam_congestion}
+        
+
+    def _rho_i_func(self, x):
+        x_i = 0.5
+        sigma_i = 0.5
+        a_i = np.exp(-(1-x_i)**2 / (2*sigma_i**2)) * (1-x_i) / (2*sigma_i**3 * np.sqrt(2*np.pi))
+        b_i = np.exp(-x_i**2 / (2*sigma_i**2)) * x_i / (2*sigma_i**3 * np.sqrt(2*np.pi))
+
+        return np.exp(-(x-x_i)**2 / (2*sigma_i**2)) / (sigma_i * np.sqrt(2*np.pi)) + a_i*x**2 + b_i*(1-x**2)
+
 
     # The initial distribution rho_0 of the agents
     def sample_rho0(self, num_samples):
         """
         The initial distribution rho_0 of the agents.
         """
-        mu = torch.tensor([[self.x_c]*self.dim], dtype=torch.float)
-        out = self.sigma_c * torch.randn(size=(num_samples, self.dim)) + mu
-        return out
+        
+        B_i = quad(self._rho_i_func, 0, 1)[0]
+
+        x = np.linspace(0, 1, 1000)
+        y = B_i * self._rho_i_func(x)
+
+        F = cumulative_trapezoid(y, x, initial=0)
+        F /= F[-1]  # Нормируем, чтобы F(1) = 1
+        # Интерполируем обратную функцию F^{-1}(u)
+        
+        inv_cdf = interp1d(F, x, fill_value="extrapolate")
+
+        u = torch.rand((num_samples, self.dim))
+        samples = torch.FloatTensor(inv_cdf(u))
+
+        groups = torch.zeros((samples.shape), dtype=torch.float32)
+        for i in range(7):
+            groups[:, i] = self.init_count[i] / sum(self.init_count)
+
+        return samples, groups
+    
 
     # The final-time cost function.
     def psi_func(self, xx_inp, generator):
         """
         The final-time cost function.
         """
-        xx = xx_inp[:, 0:2]
-        center = torch.tensor([[2, 0]], dtype=torch.float).to(self.device)
-        out = self.psi_scale * torch.norm(xx - center, dim=1, keepdim=True)
+        t = torch.zeros((xx_inp.size(0), 1)) + self.TT
+        rho_est = self._estimate_rho(generator, t, xx_inp)
+
+        out = torch.zeros_like(xx_inp).to(xx_inp.device)
+        out[:, 2] = 2 * self.d2 * rho_est[:, 2] # I group
 
         return out
 
     # The Hamiltonian
     # ham = env.ham(tt_samples, rhott_samples, (-1) * phi_grad_xx)
-    def ham(self, tt, xx, pp):
+    def ham(self, generator, tt, xx, pp, phi_vals):
         """
         The Hamiltonian.
         """
-        out = self.ham_scale * torch.norm(pp, dim=1, keepdim=True) # keepdim=True: Без этого: выход [N], с этим: выход [N, 1]
+        out = torch.zeros_like(xx).to(xx.device)
+        out -= pp**2 / 2
 
-        # Пример:   pp = torch.tensor([[1.0, 0.0, 0.0],   # Норма = 1.0
-        #                              [1.0, 2.0, 2.0]])  # Норма = sqrt(1+4+4)=3.0
-        #           out = 5 * torch.norm(pp, dim=1, keepdim=True)
-        # Результат: [[5.0],  # 5 * 1.0
-        #             [15.0]] # 5 * 3.0
+        rho_est = self._estimate_rho(generator, tt, xx)
+
+        out[:, 0] = (5 - self.a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * (self.alpha_i * rho_est[:, 2] + self.alpha_e * rho_est[:, 1])
+        out[:, 1] = (5 - self.a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * self.alpha_e * rho_est[:, 0] + self.w_inc * (phi_vals[:, 2] - phi_vals[:, 3])
+        out[:, 2] = (5 - self.a) / 5 * self.alpha_i * rho_est[:, 0] * (phi_vals[:, 0] - phi_vals[:, 1]) + self.w_inf * (phi_vals[:, 2] - phi_vals[:, 4]) + \
+        + self.beta * self.w_inf * (phi_vals[:, 4] - phi_vals[:, 3])
+        
+        out[:, 3] = self.w_imm * (phi_vals[:, 3] - phi_vals[:, 0])
+        out[:, 4] = self.w_hosp * (phi_vals[:, 4] - phi_vals[:, 3]) + self.eps_hc * self.w_hosp * (phi_vals[:, 3] - phi_vals[:, 5])
+        out[:, 5] = self.w_crit * (phi_vals[:, 5] - phi_vals[:, 4]) + self.mu * self.w_crit * (phi_vals[:, 4] - phi_vals[:, 6])
 
         return out
+
 
     # Вычисляем Лаплассиан (вторая производная grad=phi_grad_xx по xx=rhott_samples)
     # get_hjb_loss --> env.get_trace(phi_grad_xx, rhott_samples, batch_size, env.dim, grad_outputs_vec)
@@ -93,99 +147,48 @@ class SEIRHCD_Env(object):
         # Вычисление лапласиана: Суммирует диагональные элементы гессиана по всем измерениям.
         # Результат: (50,) - лапласиан для каждого из 50 элементов
         laplacian = torch.sum(pre_laplacian, dim=1)
-        # Повторяет лапласиан 7 раз: (50, 1) → (50, 7)
         laplacian_sum_repeat = laplacian.repeat((1, dim))
-        # Транспонирует: (7, 50)
+
         return laplacian_sum_repeat.T
 
+
     # Вычисляем ограничивающую функцию f(x,t)
-    def FF_func(self, td, tt_samples, rhott_samples, disc_or_gen):
+    def FF_func(self, td, tt, rhott_samples, disc_or_gen):
         """
         Computes the forcing term (i.e. obstacle or interaction between agents) of the
         Hamilton-Jacobi equation.
         """
-        sample_size = rhott_samples.size(0)
+        out = torch.zeros_like(rhott_samples).to(rhott_samples.device)
+        rho_est = rho_est = self._estimate_rho(td['generator'], tt, rhott_samples)
 
-        FF_total_tensor = torch.zeros((sample_size, 1)).to(td['device'])
-        info = {'FF_obstacle_loss': '--', 'FF_congestion_loss': '--'}
-
-        # Obstacle
-        if self.lam_obstacle > 0:
-            FF_obstacle_tensor = self.lam_obstacle * self._FF_obstacle_loss(rhott_samples)
-            FF_total_tensor += FF_obstacle_tensor
-            info['FF_obstacle_loss'] = FF_obstacle_tensor.mean(dim=0).item()
-
-        # Congestion
-        if self.lam_congestion > 0:
-            FF_congestion_tensor = self.lam_congestion * self._FF_congestion_loss(
-                td['generator'], tt_samples, rhott_samples, disc_or_gen, first_d_dim=2)
-            FF_total_tensor += FF_congestion_tensor
-            info['FF_congestion_loss'] = FF_congestion_tensor.mean(dim=0).item()
-
-        FF_total_tensor *= td['TT'][0].item()
-
-        return FF_total_tensor, info
-
-    def _FF_obstacle_loss(self, xx_inp, scale=1):
-        """
-        Calculate interaction term. Calculates F(x), where F is the forcing term in the HJB equation.
-        """
-        batch_size = xx_inp.size(0)
-        xx = xx_inp[:, 0:2]
-        dim = xx.size(1)
-        assert (dim == 2), f"Require dim=2 but, got dim={dim} (BAD)"
-
-        center = torch.tensor([0, 0] + [0] * (dim - 2), dtype=torch.float).to(self.device)
-        covar_mat = torch.eye(dim, dtype=torch.float)
-        covar_mat[0:2, 0:2] = torch.tensor(np.array([[5, 0], [0, -1]]),
-                                           dtype=torch.float)
-        covar_mat = covar_mat.expand(batch_size, dim, dim).to(self.device)
-        xxmu = (xx - center).unsqueeze(1).bmm(covar_mat)
-        # bmm: batch matrix multiplication
-        out = (-1) * torch.bmm(xxmu, (xx - center).unsqueeze(2)) - 0.1
-
-        # Преобразовываем размерность в [batch_size, 1]
-        out = scale * out.view(-1, 1)
-        # Обнуляем положительные значения (свободное пространство). Сохраняем отрицательные (зоны препятствия)
-        out = torch.relu(out)
+        out[:, 1] = 2 * self.d1 * rho_est[:, 1]
+        out[:, 2] = 2 * self.d1 * rho_est[:, 2]
+        out[:, 3] = -2 * self.d1 * (1 - rho_est[:, 3])
+        out[:, 6] = -2 * self.d1 * (1 - rho_est[:, 6])
 
         return out
 
-    def _FF_congestion_loss(self, generator, tt_samples, rhott_samples, disc_or_gen, first_d_dim=2):
+    
+    def _estimate_rho(self, generator, t, x, use_samples=100): # x - first half of output of generator B x dim
         """
-        Interaction term, for congestion.
+        x - tensor of B x dim
+        t - tensor of B x 1
         """
+        h = 0.1
+        out = torch.zeros_like(x).to(x.device)
 
-        # Генерируем ещё одну группу агентов в t=0
-        rho00_2 = self.sample_rho0(rhott_samples.size(0)).to(self.device)
+        rho00, init_groups = self.sample_rho0(use_samples)
+        rho00 = rho00.to(x.device)
 
-        # Генерируем ещё одну группу агентов в t=tt
-        if disc_or_gen == DISC_STRING:
-            rhott_samples2 = generator(tt_samples, rho00_2).detach()
-        elif disc_or_gen == GEN_STRING:
-            rhott_samples2 = generator(tt_samples, rho00_2)
-        else:
-            raise ValueError(f'Invalid disc_or_gen. Should be \'disc\' or \'gen\' but got: {disc_or_gen}')
-        rhott_samples_first_d = rhott_samples[:, :first_d_dim]
-        rhott_samples2_first_d = rhott_samples2[:, :first_d_dim]
+        for b in range(x.size(0)):
+            rhott_samples, groups = generator(torch.repeat_interleave(t[b], use_samples).unsqueeze(1), rho00, init_groups)
+            rhott_samples = rhott_samples.detach().requires_grad_(True)
+            groups = groups.detach().requires_grad_(True)
 
-        # Сумма квадратов разницы двух групп агентов сгенерированных генератором
-        distances = sqeuc(rhott_samples_first_d - rhott_samples2_first_d)
-        # Чем меньше distances, тем больше out - функция перегруженности (congestion loss)
-        # Т.е. это "штраф" за сближение агентов (чем ближе агенты, тем больше значение функции)
-        # Функция создаёт "зону отталкивания" вокруг каждого агента
-        out = 1 / (distances + 1)
+            diffs = (x[b] - rhott_samples) / h
+            kernel_vals = torch.exp(-0.5 * diffs**2) / (2 * torch.pi)**0.5
+            out[b, :] = torch.mean(kernel_vals, dim=0) / h
 
-        return out
-
-    def FF_obstacle_func(self, x, y):
-        """
-        The bottleneck obstacle, located at the top and bottom, for plotting purposes.
-        """
-        center = np.array([0, 0], dtype=np.float)
-        mat = np.array([[5, 0], [0, -1]], dtype=np.float)
-        vec = np.array([x, y], dtype=np.float) - center
-        quad = np.dot(vec, np.dot(mat, vec))
-        out = (-1) * quad - 0.1
+            out[b, :] *= groups[0] # different density across groups
 
         return out

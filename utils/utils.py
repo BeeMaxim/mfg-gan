@@ -1,5 +1,9 @@
 import torch
 import numpy as np
+
+import matplotlib
+matplotlib.use('Agg') 
+
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import cm
 import datetime
@@ -121,26 +125,57 @@ class Plotter(object):
 
         return fig
 
-    def make_plots(self, epoch, generator, the_logger):
+    def make_plots(self, env, epoch, generator, the_logger):
         """
         Prints trajectories for 8 timesteps. Blue points are the start (time=0),
         red points are the end (time=T).
         """
+        n = 10
+
         with torch.no_grad():
-            # Переключаем генератор в режим eval
             generator.eval()
 
-            # Make the plot
-            fig = self._get_plot_fig(generator)
-            fig.suptitle(f'epoch: {epoch}')
-            if self.show_plots:
-                plt.show()
-            path = the_logger.save_plot(epoch, fig)
+            # curves by groups
+            tt = torch.arange(0, env.TT, env.TT / n).view(-1, 1)
+            rho00, init_groups = env.sample_rho0(n)
+            _, groups = generator(tt, rho00, init_groups)
+
+            alphas = []
+
+            for i in range(groups.size(1)):
+                alphas.append(groups[:, i])
+
+            fig, axs = plt.subplots(2, 4, figsize=(24, 12))
+            names = ['S', 'E', 'I', 'R', 'H', 'C', 'D']
+            for i, tensor in enumerate(alphas):
+                axs[i // 4, i % 4].plot(tensor.detach().cpu().numpy())  # поддержка GPU и градиентов
+                axs[i // 4, i % 4].set_title(f'{names[i]} - group')
+
+            fig.suptitle(f'curves epoch: {epoch}')
+            curve_path = the_logger.save_plot(epoch, fig, name='curves')
             plt.close(fig)
+
+
+            # density plots
+            num_samples = 100
+            tt = torch.ones(num_samples).view(-1, 1)
+            rho00, init_groups = env.sample_rho0(num_samples)
+            samples, groups = generator(tt, rho00, init_groups)
+
+            fig, axs = plt.subplots(2, 4, figsize=(24, 12))
+            names = ['S', 'E', 'I', 'R', 'H', 'C', 'D']
+            for i in range(samples.size(1)):
+                axs[i // 4, i % 4].hist(samples[:, i].detach().cpu().numpy(), color='orange', edgecolor='black', bins=num_samples // 3)
+                axs[i // 4, i % 4].set_title(f'{names[i]} - group')
+
+            fig.suptitle(f'density epoch: {epoch}')
+            density_path = the_logger.save_plot(epoch, fig, name='density')
+            plt.close(fig)
+
 
             # Переключаем обратно в режим train
             generator.train()
-            return path
+            return curve_path, density_path
 
 
 # ===========================================================
@@ -282,15 +317,15 @@ class Logger(object):
                         'gen_std': generator.std},
                 join(self.model_path, f'generator-epoch-{epoch}.pth.tar'))
 
-    def save_plot(self, epoch, fig):
+    def save_plot(self, epoch, fig, name):
         """
         Save plots.
         """
         if self.do_logging:
             # Save the 2D (static) plot
-            fig.savefig(join(self.plots_dir, f'plot-{epoch}.png'), bbox_inches='tight')
-            fig.savefig(join(self.experiment_dir, f'latest_plot.png'), bbox_inches='tight')
-            return join(self.plots_dir, f'plot-{epoch}.png')
+            fig.savefig(join(self.plots_dir, f'{name}_plot-{epoch}.png'), bbox_inches='tight')
+            fig.savefig(join(self.experiment_dir, f'{name}_latest_plot.png'), bbox_inches='tight')
+            return join(self.plots_dir, f'{name}_plot-{epoch}.png')
 
     def print_to_console(self, td, disc_or_gen):
         """

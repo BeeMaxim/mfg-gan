@@ -140,9 +140,9 @@ def get_hjb_loss(td, tt_samples, rhott_samples, batch_size, ones_of_size_phi_out
         phi_trace_xx = torch.zeros(phi_grad_tt.size()).to(td['device'])
 
     # Гамильтониан
-    ham = env.ham(td['generator'], tt_samples, rhott_samples, (-1) * phi_grad_xx, phi_out)
+    ham = env.ham(td['generator'], tt_samples, rhott_samples, phi_grad_xx, phi_out)
 
-    out = (phi_grad_tt + env.nu * phi_trace_xx - ham) * td['TT'][0].item()
+    out = (phi_grad_tt + env.nu * phi_trace_xx + ham) * td['TT'][0].item()
 
     # Compute some info
     info = {'phi_trace_xx': phi_trace_xx.mean(dim=0).item() * td['TT'][0].item()}

@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import pandas as pd
 import torch
 from scipy.integrate import quad, cumulative_trapezoid
 from scipy.interpolate import interp1d
@@ -20,10 +21,10 @@ class SEIRHCD_Env(object):
         self.d1 = 1e-5
         self.d2 = 10
 
-        self.init_count = [2769113, 462, 2520, 6193, 1845, 26, 129, 2798170]
+        self.init_count = [2769113, 462, 2520, 6193, 1845, 26, 129]
 
         # ---------------------- #
-        self.nu = 0.1
+        self.nu = 0 # 0.1
         self.TT = 1
         self.ham_scale = 5
         self.psi_scale = 1
@@ -48,6 +49,22 @@ class SEIRHCD_Env(object):
         # Options for plotting
         self.plot_window_size = 3
         self.plot_dim = 2
+
+        data_path  = 'C:\\Users\\User\\Desktop\MFG_GAN_model\\total_data_SEIR_HCD_Novosibirsk.xlsx'
+
+        params = pd.read_excel(data_path)
+
+        self.a = params['a'].values
+        self.alpha_i = params['alpha_I'].values
+        self.alpha_e = params['alpha_E'].values
+        self.w_inc = params['w_inc'].values
+        self.w_inf = params['w_inf'].values
+        self.w_imm = params['w_imm'].values
+        self.w_hosp = params['w_hosp'].values
+        self.w_crit = params['w_crit'].values
+        self.beta = params['beta'].values
+        self.eps_hc = params['eps_HC'].values
+        self.mu = params['mu'].values
 
         # Параметры модели SEIR-HCD
         self.info_dict = {'env_name': self.name, 'dim': self.dim, 'nu': self.nu,
@@ -113,16 +130,42 @@ class SEIRHCD_Env(object):
         out = torch.zeros_like(xx).to(xx.device)
         out -= pp**2 / 2
 
+        a = torch.zeros(tt.size(0))
+        alpha_i = torch.zeros(tt.size(0))
+        alpha_e = torch.zeros(tt.size(0))
+        w_inc = torch.zeros(tt.size(0))
+        w_inf = torch.zeros(tt.size(0))
+        w_imm = torch.zeros(tt.size(0))
+        w_hosp = torch.zeros(tt.size(0))
+        w_crit = torch.zeros(tt.size(0))
+        beta = torch.zeros(tt.size(0))
+        eps_hc = torch.zeros(tt.size(0))
+        mu = torch.zeros(tt.size(0))
+
+        for i in range(xx.size(0)):
+            index = int(tt.detach()[i] * len(self.a))
+            a[i] = self.a[i]
+            alpha_i[i] = self.alpha_i[index]
+            alpha_e[i] = self.alpha_e[index]
+            w_inc[i] = self.w_inc[index]
+            w_inf[i] = self.w_inf[index]
+            w_imm[i] = self.w_imm[index]
+            w_hosp[i] = self.w_hosp[index]
+            w_crit[i] = self.w_crit[index]
+            beta[i] = self.beta[index]
+            eps_hc[i] = self.eps_hc[index]
+            mu[i] = self.mu[index]
+
         rho_est = self._estimate_rho(generator, tt, xx)
 
-        out[:, 0] = (5 - self.a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * (self.alpha_i * rho_est[:, 2] + self.alpha_e * rho_est[:, 1])
-        out[:, 1] = (5 - self.a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * self.alpha_e * rho_est[:, 0] + self.w_inc * (phi_vals[:, 2] - phi_vals[:, 3])
-        out[:, 2] = (5 - self.a) / 5 * self.alpha_i * rho_est[:, 0] * (phi_vals[:, 0] - phi_vals[:, 1]) + self.w_inf * (phi_vals[:, 2] - phi_vals[:, 4]) + \
-        + self.beta * self.w_inf * (phi_vals[:, 4] - phi_vals[:, 3])
+        out[:, 0] = (5 - a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * (alpha_i * rho_est[:, 2] + alpha_e * rho_est[:, 1])
+        out[:, 1] = (5 - a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * alpha_e * rho_est[:, 0] + w_inc * (phi_vals[:, 2] - phi_vals[:, 3])
+        out[:, 2] = (5 - a) / 5 * alpha_i * rho_est[:, 0] * (phi_vals[:, 0] - phi_vals[:, 1]) + w_inf * (phi_vals[:, 2] - phi_vals[:, 4]) + \
+        + beta * w_inf * (phi_vals[:, 4] - phi_vals[:, 3])
         
-        out[:, 3] = self.w_imm * (phi_vals[:, 3] - phi_vals[:, 0])
-        out[:, 4] = self.w_hosp * (phi_vals[:, 4] - phi_vals[:, 3]) + self.eps_hc * self.w_hosp * (phi_vals[:, 3] - phi_vals[:, 5])
-        out[:, 5] = self.w_crit * (phi_vals[:, 5] - phi_vals[:, 4]) + self.mu * self.w_crit * (phi_vals[:, 4] - phi_vals[:, 6])
+        out[:, 3] = w_imm * (phi_vals[:, 3] - phi_vals[:, 0])
+        out[:, 4] = w_hosp * (phi_vals[:, 4] - phi_vals[:, 3]) + eps_hc * w_hosp * (phi_vals[:, 3] - phi_vals[:, 5])
+        out[:, 5] = w_crit * (phi_vals[:, 5] - phi_vals[:, 4]) + mu * w_crit * (phi_vals[:, 4] - phi_vals[:, 6])
 
         return out
 
@@ -169,7 +212,7 @@ class SEIRHCD_Env(object):
         return out
 
     
-    def _estimate_rho(self, generator, t, x, use_samples=100): # x - first half of output of generator B x dim
+    def _estimate_rho(self, generator, t, x, use_samples=50): # x - first half of output of generator B x dim
         """
         x - tensor of B x dim
         t - tensor of B x 1

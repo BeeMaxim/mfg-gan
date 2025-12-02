@@ -174,10 +174,9 @@ def start_train(a):
         #           Plot images and etc.
         # =======================================
         if epoch % a['print_rate'] == 0:
-            pass
-            #path = the_plotter.make_plots(epoch, generator, the_logger)
-            #print(path)
-            #writer.add_image('image', path)
+            curve_path, density_path = the_plotter.make_plots(env, epoch, generator, the_logger)
+            writer.add_image('curve_image', curve_path)
+            writer.add_image('density_image', density_path)
 
         if epoch % a['print_rate'] == 0:
             writer.set_step(epoch)

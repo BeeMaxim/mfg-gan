@@ -41,15 +41,14 @@ def train_once(td, disc_or_gen):
         disc_00_loss = get_disc_00_loss(td, td['discriminator'])
         # L2 Hamiltonian residual
         # Вычисляем loss_HJB = mean(norm(loss_t + f))
-        disc_hjb_error = torch.norm(hjb_loss_tensor + FF_total_tensor, dim=1).mean(dim=0) / td['TT'][0].item()
+        disc_hjb_error = torch.norm(hjb_loss_tensor - FF_total_tensor, dim=1).mean(dim=0) / td['TT'][0].item()
         # Total loss
-        # loss_total = loss_0 + loss_t + loss_HJB. Почему перед (loss_0 + loss_t) стоит -1 ???
+
         total_loss = (-1) * (disc_00_loss + hjb_loss) + td['lam_hjb_error'] * disc_hjb_error
     else:  # disc_or_gen == GEN_STRING:
         # Total loss
         FF_total_loss = FF_total_tensor.mean(dim=0)
-        total_loss = hjb_loss + FF_total_loss
-
+        total_loss = hjb_loss + FF_total_loss # + or - ???
     # Backprop and optimize
 
     total_loss.sum().backward()
@@ -58,10 +57,6 @@ def train_once(td, disc_or_gen):
     # Get info about the training
     with torch.no_grad():
         hjb_error = torch.norm(hjb_loss_tensor + FF_total_tensor, dim=1).mean(dim=0) / td['TT'][0].item()
-        '''
-        training_info = {'total_loss': total_loss.item(), 'hjb_loss': hjb_loss.item(), 'hjb_error': hjb_error.item()}
-        training_info.update(hjb_loss_info)
-        training_info.update(forcing_info)'''
         training_info = {}
 
         prefix = 'disc' if disc_or_gen == DISC_STRING else 'gen'

@@ -212,7 +212,7 @@ class SEIRHCD_Env(object):
         return out
 
     
-    def _estimate_rho(self, generator, t, x, use_samples=50): # x - first half of output of generator B x dim
+    def _estimate_rho(self, generator, t, x, use_samples=250): # x - first half of output of generator B x dim
         """
         x - tensor of B x dim
         t - tensor of B x 1
@@ -225,8 +225,8 @@ class SEIRHCD_Env(object):
 
         for b in range(x.size(0)):
             rhott_samples, groups = generator(torch.repeat_interleave(t[b], use_samples).unsqueeze(1), rho00, init_groups)
-            rhott_samples = rhott_samples.detach().requires_grad_(True)
-            groups = groups.detach().requires_grad_(True)
+            #rhott_samples = rhott_samples.detach().requires_grad_(True)
+            #groups = groups.detach().requires_grad_(True)
 
             diffs = (x[b] - rhott_samples) / h
             kernel_vals = torch.exp(-0.5 * diffs**2) / (2 * torch.pi)**0.5

@@ -32,7 +32,7 @@ parser.add_argument('--torch_seed',            default=torch_seed)
 parser.add_argument('--np_seed',               default=np_seed)
 parser.add_argument('--max_epochs',            default=int(5e5))
 parser.add_argument('--device',                default=device)
-parser.add_argument('--print_rate',            default=10, help='How often to print to console and log')
+parser.add_argument('--print_rate',            default=20, help='How often to print to console and log')
 
 parser.add_argument('--batch_size',            default=10)
 parser.add_argument('--ns',                    default=100, help='Network size')

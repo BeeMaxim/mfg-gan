@@ -130,8 +130,7 @@ def get_hjb_loss(td, tt_samples, rhott_samples, batch_size, ones_of_size_phi_out
                                       grad_outputs=torch.repeat_interleave(ones_of_size_phi_out, td['env'].dim, dim=1),
                                       create_graph=True,
                                       retain_graph=True,
-                                      only_inputs=True,
-                                      allow_unused=False)[0]
+                                      only_inputs=True)[0]
 
     # Если ν > 0 (коэффициент диффузии), то надо вычислить оператор Лапласа (сумму вторых производных)
     if env.nu > 0:
@@ -143,6 +142,7 @@ def get_hjb_loss(td, tt_samples, rhott_samples, batch_size, ones_of_size_phi_out
     ham = env.ham(td['generator'], tt_samples, rhott_samples, phi_grad_xx, phi_out)
 
     out = (phi_grad_tt + env.nu * phi_trace_xx + ham) * td['TT'][0].item()
+    #print(out.shape)
 
     # Compute some info
     info = {'phi_trace_xx': phi_trace_xx.mean(dim=0).item() * td['TT'][0].item()}

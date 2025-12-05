@@ -29,16 +29,16 @@ def train_once(td, disc_or_gen):
     hjb_loss_tensor = hjb_loss_tensor[:td['batch_size']]
 
     # ... loss_t = hjb_loss_tensor.mean(dim=0)
-    hjb_loss = hjb_loss_tensor.mean(dim=0)
+    hjb_loss = (hjb_loss_tensor).mean(dim=0)
 
     # Interaction terms
     # Вычисляем f(xb,tb)
-    FF_total_tensor = get_FF_loss(td, tt_samples, rhott_samples, disc_or_gen)
+    FF_total_tensor = get_FF_loss(td, tt_samples, rhott_samples, disc_or_gen) #* groups
 
     # Finish computing the total loss
     if disc_or_gen == DISC_STRING:
         # Integral of phi_0 * rho_0
-        disc_00_loss = get_disc_00_loss(td, td['discriminator'])
+        disc_00_loss = get_disc_00_loss(td, td['discriminator']) #* groups
         # L2 Hamiltonian residual
         # Вычисляем loss_HJB = mean(norm(loss_t + f))
         disc_hjb_error = torch.norm(hjb_loss_tensor - FF_total_tensor, dim=1).mean(dim=0) / td['TT'][0].item()

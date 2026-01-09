@@ -15,11 +15,12 @@ class SEIRHCD_Env(object):
     SEIR-HCD environment.
     """
     def __init__(self, device):
+        mult = 1
         self.dim = 7
         self.x_c = 0.5
         self.sigma_c = 0.2
-        self.d1 = 1e-5
-        self.d2 = 10
+        self.d1 = 1e-5 * mult
+        self.d2 = 10 * mult
 
         self.init_count = [2769113, 462, 2520, 6193, 1845, 26, 129]
 
@@ -50,7 +51,7 @@ class SEIRHCD_Env(object):
         self.plot_window_size = 3
         self.plot_dim = 2
 
-        data_path  = 'C:\\Users\\User\\Desktop\MFG_GAN_model\\total_data_SEIR_HCD_Novosibirsk.xlsx'
+        data_path  = 'D:\\mfg-gan\\mfg-gan\\total_data_SEIR_HCD_Novosibirsk.xlsx'
 
         params = pd.read_excel(data_path)
 
@@ -72,14 +73,12 @@ class SEIRHCD_Env(object):
                           'lam_obstacle': self.lam_obstacle, 'lam_congestion': self.lam_congestion}
         
 
-    def _rho_i_func(self, x):
-        x_i = 0.5
-        sigma_i = 0.5
+    def _rho_i_func(self, x, x_i=0.5, sigma_i=0.2):
         a_i = np.exp(-(1-x_i)**2 / (2*sigma_i**2)) * (1-x_i) / (2*sigma_i**3 * np.sqrt(2*np.pi))
         b_i = np.exp(-x_i**2 / (2*sigma_i**2)) * x_i / (2*sigma_i**3 * np.sqrt(2*np.pi))
 
         return np.exp(-(x-x_i)**2 / (2*sigma_i**2)) / (sigma_i * np.sqrt(2*np.pi)) + a_i*x**2 + b_i*(1-x**2)
-
+    
 
     # The initial distribution rho_0 of the agents
     def sample_rho0(self, num_samples):
@@ -105,7 +104,27 @@ class SEIRHCD_Env(object):
         for i in range(7):
             groups[:, i] = self.init_count[i] / sum(self.init_count)
 
-        return samples, groups
+        return u, samples, groups
+    
+
+    def sample_rhot(self, u, x_i, sigma_i):
+        samples = torch.zeros_like(u)
+        for i in range(u.size(0)):
+            for j in range(u.size(1)):
+                B_i = quad(self._rho_i_func, 0, 1, args=(x_i[i, j], sigma_i[i, j]))[0]
+
+                x = np.linspace(0, 1, 1000)
+                y = B_i * self._rho_i_func(x, x_i[i, j], sigma_i[i, j])
+
+                F = cumulative_trapezoid(y, x, initial=0)
+                F /= F[-1]  # Нормируем, чтобы F(1) = 1
+                # Интерполируем обратную функцию F^{-1}(u)
+                
+                inv_cdf = interp1d(F, x, fill_value="extrapolate")
+
+                samples[i, j] = float(inv_cdf(u[i, j]))
+
+        return samples
     
 
     # The final-time cost function.
@@ -113,13 +132,54 @@ class SEIRHCD_Env(object):
         """
         The final-time cost function.
         """
-        t = torch.zeros((xx_inp.size(0), 1)) + self.TT
+        t = torch.zeros((xx_inp.size(0), 1)).to(xx_inp.device) + self.TT
         rho_est = self._estimate_rho(generator, t, xx_inp)
 
         out = torch.zeros_like(xx_inp).to(xx_inp.device)
         out[:, 2] = 2 * self.d2 * rho_est[:, 2] # I group
 
         return out
+    
+
+    def kfp_term(self, tt, rho_estimation):
+        a = torch.zeros(tt.size(0)).to(tt.device)
+        alpha_i = torch.zeros(tt.size(0)).to(tt.device)
+        alpha_e = torch.zeros(tt.size(0)).to(tt.device)
+        w_inc = torch.zeros(tt.size(0)).to(tt.device)
+        w_inf = torch.zeros(tt.size(0)).to(tt.device)
+        w_imm = torch.zeros(tt.size(0)).to(tt.device)
+        w_hosp = torch.zeros(tt.size(0)).to(tt.device)
+        w_crit = torch.zeros(tt.size(0)).to(tt.device)
+        beta = torch.zeros(tt.size(0)).to(tt.device)
+        eps_hc = torch.zeros(tt.size(0)).to(tt.device)
+        mu = torch.zeros(tt.size(0)).to(tt.device)
+
+        for i in range(tt.size(0)):
+            index = int(tt.detach()[i] * len(self.a))
+            a[i] = self.a[i]
+            alpha_i[i] = self.alpha_i[index]
+            alpha_e[i] = self.alpha_e[index]
+            w_inc[i] = self.w_inc[index]
+            w_inf[i] = self.w_inf[index]
+            w_imm[i] = self.w_imm[index]
+            w_hosp[i] = self.w_hosp[index]
+            w_crit[i] = self.w_crit[index]
+            beta[i] = self.beta[index]
+            eps_hc[i] = self.eps_hc[index]
+            mu[i] = self.mu[index]
+
+        out = torch.zeros_like(rho_estimation).to(rho_estimation.device)
+        m = rho_estimation
+        out[:, 0] = (5 - a) / 5 * (alpha_i * m[:, 0] * m[:, 2] + alpha_e * m[:, 0] * m[:, 1]) - w_imm * m[:, 3]
+        out[:, 1] = -(5 - a) / 5 * (alpha_i * m[:, 0] * m[:, 2] + alpha_e * m[:, 0] * m[:, 1]) + w_inc * m[:, 1]
+        out[:, 2] = -w_inc * m[:, 1] + w_inf * m[:, 2]
+        out[:, 3] = -beta * w_inf * m[:, 2] - (1 - eps_hc) * w_hosp * m[:, 4] + w_imm * m[:, 3]
+        out[:, 4] = -(1 - beta) * w_inf * m[:, 2] - (1 - mu) * w_crit * m[:, 5] + w_hosp * m[:, 4]
+        out[:, 5] = -eps_hc * w_hosp * m[:, 4] + w_crit * m[:, 5]
+        out[:, 6] = -mu * w_crit * m[:, 5]
+
+        return out
+
 
     # The Hamiltonian
     # ham = env.ham(tt_samples, rhott_samples, (-1) * phi_grad_xx)
@@ -130,17 +190,17 @@ class SEIRHCD_Env(object):
         out = torch.zeros_like(xx).to(xx.device)
         out -= pp**2 / 2
 
-        a = torch.zeros(tt.size(0))
-        alpha_i = torch.zeros(tt.size(0))
-        alpha_e = torch.zeros(tt.size(0))
-        w_inc = torch.zeros(tt.size(0))
-        w_inf = torch.zeros(tt.size(0))
-        w_imm = torch.zeros(tt.size(0))
-        w_hosp = torch.zeros(tt.size(0))
-        w_crit = torch.zeros(tt.size(0))
-        beta = torch.zeros(tt.size(0))
-        eps_hc = torch.zeros(tt.size(0))
-        mu = torch.zeros(tt.size(0))
+        a = torch.zeros(tt.size(0)).to(xx.device)
+        alpha_i = torch.zeros(tt.size(0)).to(xx.device)
+        alpha_e = torch.zeros(tt.size(0)).to(xx.device)
+        w_inc = torch.zeros(tt.size(0)).to(xx.device)
+        w_inf = torch.zeros(tt.size(0)).to(xx.device)
+        w_imm = torch.zeros(tt.size(0)).to(xx.device)
+        w_hosp = torch.zeros(tt.size(0)).to(xx.device)
+        w_crit = torch.zeros(tt.size(0)).to(xx.device)
+        beta = torch.zeros(tt.size(0)).to(xx.device)
+        eps_hc = torch.zeros(tt.size(0)).to(xx.device)
+        mu = torch.zeros(tt.size(0)).to(xx.device)
 
         for i in range(xx.size(0)):
             index = int(tt.detach()[i] * len(self.a))
@@ -158,14 +218,14 @@ class SEIRHCD_Env(object):
 
         rho_est = self._estimate_rho(generator, tt, xx)
 
-        out[:, 0] = (5 - a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * (alpha_i * rho_est[:, 2] + alpha_e * rho_est[:, 1])
-        out[:, 1] = (5 - a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * alpha_e * rho_est[:, 0] + w_inc * (phi_vals[:, 2] - phi_vals[:, 3])
-        out[:, 2] = (5 - a) / 5 * alpha_i * rho_est[:, 0] * (phi_vals[:, 0] - phi_vals[:, 1]) + w_inf * (phi_vals[:, 2] - phi_vals[:, 4]) + \
+        out[:, 0] += (5 - a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * (alpha_i * rho_est[:, 2] + alpha_e * rho_est[:, 1])
+        out[:, 1] += (5 - a) / 5 * (phi_vals[:, 0] - phi_vals[:, 1]) * alpha_e * rho_est[:, 0] + w_inc * (phi_vals[:, 2] - phi_vals[:, 3])
+        out[:, 2] += (5 - a) / 5 * alpha_i * rho_est[:, 0] * (phi_vals[:, 0] - phi_vals[:, 1]) + w_inf * (phi_vals[:, 2] - phi_vals[:, 4]) + \
         + beta * w_inf * (phi_vals[:, 4] - phi_vals[:, 3])
         
-        out[:, 3] = w_imm * (phi_vals[:, 3] - phi_vals[:, 0])
-        out[:, 4] = w_hosp * (phi_vals[:, 4] - phi_vals[:, 3]) + eps_hc * w_hosp * (phi_vals[:, 3] - phi_vals[:, 5])
-        out[:, 5] = w_crit * (phi_vals[:, 5] - phi_vals[:, 4]) + mu * w_crit * (phi_vals[:, 4] - phi_vals[:, 6])
+        out[:, 3] += w_imm * (phi_vals[:, 3] - phi_vals[:, 0])
+        out[:, 4] += w_hosp * (phi_vals[:, 4] - phi_vals[:, 3]) + eps_hc * w_hosp * (phi_vals[:, 3] - phi_vals[:, 5])
+        out[:, 5] += w_crit * (phi_vals[:, 5] - phi_vals[:, 4]) + mu * w_crit * (phi_vals[:, 4] - phi_vals[:, 6])
 
         return out
 
@@ -202,7 +262,7 @@ class SEIRHCD_Env(object):
         Hamilton-Jacobi equation.
         """
         out = torch.zeros_like(rhott_samples).to(rhott_samples.device)
-        rho_est = rho_est = self._estimate_rho(td['generator'], tt, rhott_samples)
+        rho_est = self._estimate_rho(td['generator'], tt, rhott_samples)
 
         out[:, 1] = 2 * self.d1 * rho_est[:, 1]
         out[:, 2] = 2 * self.d1 * rho_est[:, 2]
@@ -212,26 +272,36 @@ class SEIRHCD_Env(object):
         return out
 
     
-    def _estimate_rho(self, generator, t, x, use_samples=250): # x - first half of output of generator B x dim
+    def _estimate_rho(self, generator, t, x, use_samples=100): # x - first half of output of generator B x dim
         """
         x - tensor of B x dim
         t - tensor of B x 1
         """
-        h = 0.1
         out = torch.zeros_like(x).to(x.device)
 
-        rho00, init_groups = self.sample_rho0(use_samples)
-        rho00 = rho00.to(x.device)
+        _, rho00, init_groups = self.sample_rho0(x.size(0))
+        #rho00 = rho00.to(x.device)
+        init_groups = init_groups.to(x.device)
+        pdf_params, groups = generator(t, rho00, init_groups)
 
-        for b in range(x.size(0)):
-            rhott_samples, groups = generator(torch.repeat_interleave(t[b], use_samples).unsqueeze(1), rho00, init_groups)
-            #rhott_samples = rhott_samples.detach().requires_grad_(True)
-            #groups = groups.detach().requires_grad_(True)
+        x_i = pdf_params[..., 0]
+        sigma_i = pdf_params[..., 1]
 
-            diffs = (x[b] - rhott_samples) / h
-            kernel_vals = torch.exp(-0.5 * diffs**2) / (2 * torch.pi)**0.5
-            out[b, :] = torch.mean(kernel_vals, dim=0) / h
+        def pdf(x, x_i, sigma_i):
+            a_i = torch.exp(-(1-x_i)**2 / (2*sigma_i**2)) * (1-x_i) / (2*sigma_i**3 * (2*torch.pi)**0.5)
+            b_i = torch.exp(-x_i**2 / (2*sigma_i**2)) * x_i / (2*sigma_i**3 * (2*np.pi)**0.5)
 
-            out[b, :] *= groups[0] # different density across groups
+            return torch.exp(-(x-x_i)**2 / (2*sigma_i**2)) / (sigma_i * (2*torch.pi)**0.5) + a_i*x**2 + b_i*(1-x**2)
+
+        out = pdf(x, x_i, sigma_i) * groups
+        xs = torch.linspace(0, 1, use_samples, requires_grad=True).to(x.device)
+    
+        for i in range(out.size(0)):
+            for j in range(out.size(1)):
+                values = pdf(xs, x_i[i, j], sigma_i[i, j])   
+                weights = torch.ones_like(values)
+                weights[0] = weights[-1] = 0.5
+                integral = torch.sum(values * weights) / (use_samples - 1)
+                out[i, j] /= integral
 
         return out

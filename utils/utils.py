@@ -125,19 +125,22 @@ class Plotter(object):
 
         return fig
 
-    def make_plots(self, env, epoch, generator, the_logger):
+    def make_plots(self, env, epoch, generator, discriminator, the_logger):
         """
         Prints trajectories for 8 timesteps. Blue points are the start (time=0),
         red points are the end (time=T).
         """
-        n = 10
+        n = 30
 
         with torch.no_grad():
             generator.eval()
+            #discriminator.eval()
 
             # curves by groups
-            tt = torch.arange(0, env.TT, env.TT / n).view(-1, 1)
-            rho00, init_groups = env.sample_rho0(n)
+            tt = torch.arange(0, env.TT, env.TT / n).view(-1, 1).to(generator.device)
+            quantiles, rho00, init_groups = env.sample_rho0(n)
+            rho00 = rho00.to(generator.device)
+            init_groups = init_groups.to(generator.device)
             _, groups = generator(tt, rho00, init_groups)
 
             alphas = []
@@ -155,27 +158,63 @@ class Plotter(object):
             curve_path = the_logger.save_plot(epoch, fig, name='curves')
             plt.close(fig)
 
+            # control plot
+            with torch.enable_grad():
+                generator.train()
+                pdf_params, groups = generator(tt, rho00, init_groups)
+                rhott = env.sample_rhot(quantiles, pdf_params.cpu().detach().numpy()[..., 0], pdf_params.cpu().detach().numpy()[..., 1])
+                rhott = rhott.to(tt.device).requires_grad_(True)
+                phi_out = discriminator(tt, rhott, groups, generator)
+                generator.eval()
+                ones_of_size_phi_out = torch.ones_like(phi_out).to(phi_out.device).requires_grad_(True)
+
+                phi_grad_xx = torch.autograd.grad(outputs=phi_out,
+                    inputs=rhott,
+                    grad_outputs=ones_of_size_phi_out,
+                    create_graph=True,
+                    retain_graph=True,
+                    only_inputs=True)[0]
+
+
+            controls = []
+            for i in range(phi_grad_xx.size(1)):
+                controls.append(phi_grad_xx[:, i])
+
+            fig, axs = plt.subplots(2, 4, figsize=(24, 12))
+            names = ['S', 'E', 'I', 'R', 'H', 'C', 'D']
+            for i, tensor in enumerate(controls):
+                axs[i // 4, i % 4].plot(-tensor.detach().cpu().numpy())  # поддержка GPU и градиентов
+                axs[i // 4, i % 4].set_title(f'{names[i]} - group')
+
+            fig.suptitle(f'controls epoch: {epoch}')
+            control_path = the_logger.save_plot(epoch, fig, name='controls')
+            plt.close(fig)
+
 
             # density plots
-            num_samples = 100
-            tt = torch.ones(num_samples).view(-1, 1)
-            rho00, init_groups = env.sample_rho0(num_samples)
-            samples, groups = generator(tt, rho00, init_groups)
+            num_samples = 1000
+            tt = torch.ones(num_samples).view(-1, 1).to(generator.device)
+            quantiles, rho00, init_groups = env.sample_rho0(num_samples)
+            rho00 = rho00.to(generator.device)
+            init_groups = init_groups.to(generator.device)
+
+            pdf_params, groups = generator(tt, rho00, init_groups)
+            samples = env.sample_rhot(quantiles, pdf_params.cpu().detach().numpy()[..., 0], pdf_params.cpu().detach().numpy()[..., 1])
 
             fig, axs = plt.subplots(2, 4, figsize=(24, 12))
             names = ['S', 'E', 'I', 'R', 'H', 'C', 'D']
             for i in range(samples.size(1)):
-                axs[i // 4, i % 4].hist(samples[:, i].detach().cpu().numpy(), color='orange', edgecolor='black', bins=num_samples // 3)
+                axs[i // 4, i % 4].hist(samples[:, i].detach().cpu().numpy(), color='orange', edgecolor='black', bins=int(num_samples**0.5))
                 axs[i // 4, i % 4].set_title(f'{names[i]} - group')
 
             fig.suptitle(f'density epoch: {epoch}')
             density_path = the_logger.save_plot(epoch, fig, name='density')
             plt.close(fig)
 
-
             # Переключаем обратно в режим train
             generator.train()
-            return curve_path, density_path
+            #discriminator.train()
+            return curve_path, control_path, density_path
 
 
 # ===========================================================

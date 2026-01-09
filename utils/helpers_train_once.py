@@ -69,30 +69,61 @@ def get_generator_samples(td, disc_or_gen):
     Get generator samples.
     """
     # генерируем rho0 batch_size штук. На выходе получим вектор [batch_size x dim=2]
-    rho00, init_groups = td['env'].sample_rho0(td['batch_size'])
+    quantiles, rho00, init_groups = td['env'].sample_rho0(td['batch_size'])
+    rho00 = rho00.to(td['device'])
+    init_groups = init_groups.to(td['device'])
 
     # генерируем вектор времени из равномерного распределения от 0 до T размером
     # Если td['TT'] уже тензор на GPU, .item() автоматически перенесет значение на CPU
     tt_samples = (td['TT'][0].item() * uniform_time_sampler(td['batch_size'])).to(td['device'])
 
     if disc_or_gen == DISC_STRING:
-        # .detach(): Отсоединяет тензор от вычислительного графа, Чтобы градиенты не распространялись в генератор
-        #            при обучении дискриминатора. Т.е. замораживаем параметры генератора
-        # .requires_grad_(True): Включает вычисление градиентов для самого выхода (rhott_samples),
-        #                        чтобы дискриминатор мог вычислять градиенты по этим данным
-        rhott_samples, groups = td['generator'](tt_samples, rho00, init_groups)
-        rhott_samples = rhott_samples.detach().requires_grad_(True)
+        pdf_params, groups = td['generator'](tt_samples, rho00, init_groups)
+        rhott_samples = td['env'].sample_rhot(quantiles, pdf_params.cpu().detach().numpy()[..., 0], pdf_params.cpu().detach().numpy()[..., 1])
+        rhott_samples = rhott_samples.detach().requires_grad_(True).to(groups.device)
         groups = groups.detach().requires_grad_(True)
     elif disc_or_gen == GEN_STRING:
-        rhott_samples, groups = td['generator'](tt_samples, rho00, init_groups)
+        pdf_params, groups = td['generator'](tt_samples, rho00, init_groups)
+        rhott_samples = td['env'].sample_rhot(quantiles, pdf_params.cpu().detach().numpy()[..., 0], pdf_params.cpu().detach().numpy()[..., 1])
+        rhott_samples = rhott_samples.detach().requires_grad_(True).to(groups.device)
     else:
         raise ValueError(f'Invalid disc_or_gen. Should be \'disc\' or \'gen\' but got: {disc_or_gen}')
 
-    return rho00, tt_samples, rhott_samples, groups
+    return rho00, tt_samples, pdf_params, rhott_samples, groups
+
+
+def get_kfp_loss(td, tt_samples, rhott_samples, rho_estimation, phi_grad_xx, ones_of_size_rho_out):
+    """
+    Compute the KFP error
+    """
+    env = td['env']
+    out = torch.zeros_like(rhott_samples)
+
+    for i in range(env.dim):
+        phi_grad_tt = torch.autograd.grad(outputs=rho_estimation[:, i],
+                                        inputs=tt_samples,
+                                        grad_outputs=ones_of_size_rho_out[:, i],
+                                        create_graph=True,
+                                        retain_graph=True,
+                                        only_inputs=True)[0]
+        
+        rho_grad_xx = torch.autograd.grad(outputs=rho_estimation * 0, # * -phi_grad_xx,
+                                      inputs=rhott_samples,
+                                      grad_outputs=torch.ones_like(rho_estimation).to(td['device']).requires_grad_(True),
+                                      create_graph=True,
+                                      retain_graph=True,
+                                      only_inputs=True)[0]
+        
+        out[:, i] = phi_grad_tt[:, 0] + rho_grad_xx[:, 0]
+
+    out += env.kfp_term(tt_samples, rho_estimation)
+
+    return out
+    
 
 
 # Вычисление loss_t без усреднения по bach_size (т.е. все векторы, которые надо потом просуммировать по B и разделить на B
-def get_hjb_loss(td, tt_samples, rhott_samples, batch_size, ones_of_size_phi_out, grad_outputs_vec):
+def get_hjb_loss(td, tt_samples, rhott_samples, groups, batch_size, ones_of_size_phi_out, grad_outputs_vec):
     """
     Compute the HJB error.
     """
@@ -100,6 +131,7 @@ def get_hjb_loss(td, tt_samples, rhott_samples, batch_size, ones_of_size_phi_out
     # Integral for the Hamilton-Jacobi part
     if env.nu > 0:  # Repeate to parallelize computing the Laplacian/trace for each sample of the batch.
         rhott_samples = rhott_samples.repeat(repeats=(env.dim, 1))
+        groups = groups.repeat(repeats=(env.dim, 1))
         tt_samples = tt_samples.repeat(repeats=(env.dim, 1))
         # Например, после repeat(3, 1) при dim=3:
         #
@@ -114,7 +146,7 @@ def get_hjb_loss(td, tt_samples, rhott_samples, batch_size, ones_of_size_phi_out
     tt_samples.requires_grad_(True)  # WARNING: Keep this after generator evaluation, or else you chain rule generator's time variable
 
     # делаем оценку функции phi(t, rho(t))
-    phi_out = td['discriminator'](tt_samples, rhott_samples[:, :td['env'].dim], td['generator'])
+    phi_out = td['discriminator'](tt_samples, rhott_samples[:, :td['env'].dim], groups, td['generator'])
 
     # Вычисляем производную phi по времени t: ∂(phi_out)/∂(tt_samples)
     phi_grad_tt = torch.autograd.grad(outputs=phi_out,
@@ -156,12 +188,13 @@ def get_disc_00_loss(td, discriminator):
     """
 
     # генерируем batch_size семплов rho0
-    rho0_samples, groups = td['env'].sample_rho0(td['batch_size'])
+    quantiles, rho0_samples, groups = td['env'].sample_rho0(td['batch_size'])
     rho0_samples = rho0_samples.to(td['device'])
+    groups = groups.to(td['device'])
 
     # вычисляем phi в нулевой момент времени zero: нулевой вектор размерности (batch_size, 1)
     # и далее устредняем по размерности batch_size, чтобы получить loss_0
-    disc_00_loss = discriminator(td['zero'], rho0_samples, td['generator']).mean(dim=0)
+    disc_00_loss = discriminator(td['zero'], rho0_samples, groups, td['generator']).mean(dim=0)
 
     return disc_00_loss
 
